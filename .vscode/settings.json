@@ -2,4 +2,19 @@
   "python.defaultInterpreterPath": ".venv/bin/python",
   "editor.formatOnSave": true,
   "python.analysis.typeCheckingMode": "basic"
+
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "ms-python.black-formatter",
+
+  "python.linting.enabled": false,
+
+  "[python]": {
+    "editor.codeActionsOnSave": {
+      "source.fixAll": true,
+      "source.organizeImports": true
+    }
+  },
+
+  "ruff.enable": true,
+  "ruff.fixAll": true
 }
