@@ -39,7 +39,7 @@ class Money:
     # Return value is ignored → -> None is documentation for readers and type checkers
     def __post_init__(self) -> None:
         if self.amount.is_nan():  # Not a Number
-            raise ValueError("Money amount cannot be NaN")  # ∞ or 0/0 issues
+            raise ValueError("Money amount cannot be NaN")
         if self.amount < 0:
             raise ValueError("Money amount cannot be negative")
 
@@ -59,6 +59,38 @@ class Money:
         if n < 0:
             raise ValueError("Cannot multiply Money by a negative integer")
         return Money(self.amount * n)
+
+    def __sub__(self, other: Money) -> Money:
+        result = self.amount - other.amount
+        if result < 0:
+            raise ValueError("Money subtraction would go negative")
+        return Money(result)
+
+
+@dataclass(frozen=True, slots=True)
+class DiscountRate:
+    rate: Decimal
+
+    def __post_init__(self) -> None:
+        if self.rate.is_nan():  # Not a Number
+            raise ValueError("DiscountRate cannot be NaN")
+        if not (Decimal("0.00") <= self.rate <= Decimal("1.00")):
+            raise ValueError("DiscountRate must be between 0.00 and 1.00")
+        normalized = self.rate.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        object.__setattr__(self, "rate", normalized)
+
+    @property
+    def percentage_of_full_price(self) -> Money:
+        return Money(Decimal(1.00) - self.rate)
+
+    @property
+    def multiplier(self) -> Decimal:
+        """Portion of price to pay after discount (e.g. 0.10 off -> 0.90 pay)."""
+        return Decimal("1.00") - self.rate
+
+    def apply_to_unit_price(self, unit_price: Money) -> Money:
+        """Return discounted unit price."""
+        return Money(unit_price.amount * self.multiplier)
 
 
 # ----- Entities / Aggregates (mutable, but slotted) -----
@@ -83,6 +115,7 @@ class LineItem:
     sku: str
     unit_price: Money
     quantity: int = 1
+    optional_discount: DiscountRate | None = None
 
     def __post_init__(self) -> None:
         if not self.sku.strip():
@@ -93,6 +126,14 @@ class LineItem:
     @property
     def subtotal(self) -> Money:
         return self.unit_price * self.quantity
+
+    @property
+    def subtotal_after_discount(self) -> Money:
+        if self.optional_discount is None:
+            return self.subtotal
+
+        discounted_unit = self.optional_discount.apply_to_unit_price(self.unit_price)
+        return discounted_unit * self.quantity
 
 
 @dataclass(slots=True)
@@ -115,6 +156,7 @@ class Order:
                     sku=existing.sku,
                     unit_price=existing.unit_price,  # assume same price for Day 2
                     quantity=existing.quantity + item.quantity,
+                    optional_discount=existing.optional_discount,
                 )
                 self.items[i] = merged
                 return
@@ -128,8 +170,17 @@ class Order:
     def total_cost(self) -> Money:
         total = Money(Decimal("0"))
         for li in self.items:
-            total = total + li.subtotal
+            total = total + li.subtotal_after_discount
         return total
+
+    @property
+    def total_discount_applied(self) -> Money:
+        before = Money(Decimal("0"))
+        after = Money(Decimal("0"))
+        for li in self.items:
+            before = before + li.subtotal
+            after = after + li.subtotal_after_discount
+        return before - after
 
     def to_dict(self) -> dict:
         """Explicit serialization boundary (prefer over asdict() everywhere)."""
@@ -143,6 +194,9 @@ class Order:
                     "unit_price": str(li.unit_price.amount),
                     "quantity": li.quantity,
                     "subtotal": str(li.subtotal.amount),
+                    "discount rate": (
+                        str(li.optional_discount.rate) if li.optional_discount else None
+                    ),
                 }
                 for li in self.items
             ],
@@ -158,12 +212,15 @@ def demo() -> None:
     order = Order(id=OrderId(uuid4()), user_id=user.id)
 
     order.add_item(
-        LineItem(sku="COFFEE", unit_price=Money(Decimal("12.50")), quantity=1)
+        LineItem(
+            sku="COFFEE",
+            unit_price=Money(Decimal("10.00")),
+            quantity=1,
+            optional_discount=DiscountRate(Decimal("0.10")),
+        )
     )
     order.add_item(LineItem(sku="MUG", unit_price=Money(Decimal("7.25")), quantity=2))
-    order.add_item(
-        LineItem(sku="MUG", unit_price=Money(Decimal("7.25")), quantity=1)
-    )  # merges
+    order.add_item(LineItem(sku="MUG", unit_price=Money(Decimal("7.25")), quantity=1))
 
     print(user, "\n")
     print("Total Items: ", order.total_items)  # 4
