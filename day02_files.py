@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import textwrap
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -142,6 +143,7 @@ class Order:
     user_id: UserId
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     items: list[LineItem] = field(default_factory=list)
+    order_status: str = "DRAFT"
 
     def __post_init__(self) -> None:
         if self.created_at.tzinfo is None:
@@ -161,6 +163,18 @@ class Order:
                 self.items[i] = merged
                 return
         self.items.append(item)
+
+    def submit(self) -> None:
+        if self.order_status != "DRAFT":
+            raise ValueError("Only DRAFT orders can be submitted")
+        self.order_status = "SUBMITTED"
+        print(f"Order Status: {self.order_status} {self.id=}")
+
+    def mark_paid(self) -> None:
+        if self.order_status != "SUBMITTED":
+            raise ValueError("Only SUBMITTED orders can be paid")
+        self.order_status = "PAID"
+        print(f"Order Status: {self.order_status} {self.id=}")
 
     @property
     def total_items(self) -> int:
@@ -182,12 +196,72 @@ class Order:
             after = after + li.subtotal_after_discount
         return before - after
 
+    def print_order(self) -> None:
+        def fmt_money(m: Money) -> str:
+            # Keep it simple: dollars.cents with 2 decimals
+            return f"{m.amount:.2f}"
+
+        print(
+            f"Order {self.id}  "
+            f"Status={self.order_status}  "
+            f"Created={self.created_at.isoformat()}"
+        )
+        print("-")
+
+        # Column widths (tune as desired)
+        w_idx = 3
+        w_sku = 28
+        w_unit = 10
+        w_qty = 5
+        w_sub = 12
+        w_disc = 7
+
+        header = (
+            f"{'#':>{w_idx}}  "
+            f"{'SKU':<{w_sku}}  "
+            f"{'Unit':>{w_unit}}  "
+            f"{'Qty':>{w_qty}}  "
+            f"{'Subtotal':>{w_sub}}  "
+            f"{'Disc':>{w_disc}}"
+        )
+        print(header)
+        print("-" * len(header))
+
+        for i, li in enumerate(self.items, start=1):
+            sku_lines = textwrap.wrap(li.sku, width=w_sku) or [""]
+            unit_s = fmt_money(li.unit_price)
+            sub_s = fmt_money(li.subtotal_after_discount)
+            disc_s = (
+                f"{int(li.optional_discount.rate * 100):>2}%"
+                if li.optional_discount
+                else "-"
+            )
+            # First line with numbers
+            print(
+                f"{i:>{w_idx}}  "
+                f"{sku_lines[0]:<{w_sku}}  "
+                f"{unit_s:>{w_unit}}  "
+                f"{li.quantity:>{w_qty}}  "
+                f"{sub_s:>{w_sub}}  "
+                f"{disc_s:>{w_disc}}"
+            )
+
+            # Continuation lines for wrapped SKU
+            for cont in sku_lines[1:]:
+                print(f"{'':>{w_idx}}  {cont:<{w_sku}}")
+
+        print("-")
+        print(f"Items: {self.total_items}")
+        print(f"Total: {fmt_money(self.total_cost)}")
+        print(f"Discount applied: {fmt_money(self.total_discount_applied)}")
+
     def to_dict(self) -> dict:
         """Explicit serialization boundary (prefer over asdict() everywhere)."""
         return {
             "id": str(self.id),
             "user_id": str(self.user_id),
             "created_at": self.created_at.isoformat(),
+            "order_status": self.order_status,
             "items": [
                 {
                     "sku": li.sku,
@@ -230,6 +304,15 @@ def demo() -> None:
     # asdict is OK for quick debugging, but it will recurse and keep Decimals etc.
     # snapshot =
     print("Snapshot: ", asdict(order))
+
+    print("\nPretty order print:\n")
+    order.print_order()
+
+    order.submit()
+    order.print_order()
+
+    order.mark_paid()
+    order.print_order()
 
 
 if __name__ == "__main__":
