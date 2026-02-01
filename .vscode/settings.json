@@ -1,20 +1,18 @@
 {
   "python.defaultInterpreterPath": ".venv/bin/python",
+  "python.analysis.typeCheckingMode": "basic",
   "editor.formatOnSave": true,
-  "python.analysis.typeCheckingMode": "basic"
-
-  "editor.formatOnSave": true,
-  "editor.defaultFormatter": "ms-python.black-formatter",
-
-  "python.linting.enabled": false,
-
+  "editor.tabCompletion": "on",
+  "editor.snippetSuggestions": "top",
+  "editor.suggest.snippetsPreventQuickSuggestions": false,
+  "editor.acceptSuggestionOnEnter": "on",
   "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
     "editor.codeActionsOnSave": {
-      "source.fixAll": true,
-      "source.organizeImports": true
+      "source.fixAll": "explicit",
+      "source.organizeImports": "explicit"
     }
   },
-
   "ruff.enable": true,
-  "ruff.fixAll": true
+  "ruff.lint.enable": true
 }
