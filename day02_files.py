@@ -142,17 +142,27 @@ class Order:
     id: OrderId
     user_id: UserId
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    items: list[LineItem] = field(default_factory=list)
+    # self._items is the private, mutable storage
+    # items_view is the public, read-only interface
+    _items: list[LineItem] = field(default_factory=list)
     order_status: str = "DRAFT"
 
     def __post_init__(self) -> None:
         if self.created_at.tzinfo is None:
             raise ValueError("created_at must be timezone-aware")
 
+    # To avoid order.items.append(...)
+    # order.items.clear()
+    # all uses of the items list should use this METHOD
+    @property
+    def items_view(self) -> tuple[LineItem, ...]:
+        """Return an immutable view of the order's items."""
+        return tuple(self._items)
+
     # --- behavior / invariants ---
     def add_item(self, item: LineItem) -> None:
         # Example validation rule: prevent duplicate SKU by merging quantities.
-        for i, existing in enumerate(self.items):
+        for i, existing in enumerate(self._items):
             if existing.sku == item.sku:
                 merged = LineItem(
                     sku=existing.sku,
@@ -160,9 +170,9 @@ class Order:
                     quantity=existing.quantity + item.quantity,
                     optional_discount=existing.optional_discount,
                 )
-                self.items[i] = merged
+                self._items[i] = merged
                 return
-        self.items.append(item)
+        self._items.append(item)
 
     def submit(self) -> None:
         if self.order_status != "DRAFT":
@@ -178,12 +188,12 @@ class Order:
 
     @property
     def total_items(self) -> int:
-        return sum(li.quantity for li in self.items)
+        return sum(li.quantity for li in self._items)
 
     @property
     def total_cost(self) -> Money:
         total = Money(Decimal("0"))
-        for li in self.items:
+        for li in self._items:
             total = total + li.subtotal_after_discount
         return total
 
@@ -191,7 +201,7 @@ class Order:
     def total_discount_applied(self) -> Money:
         before = Money(Decimal("0"))
         after = Money(Decimal("0"))
-        for li in self.items:
+        for li in self._items:
             before = before + li.subtotal
             after = after + li.subtotal_after_discount
         return before - after
@@ -227,7 +237,7 @@ class Order:
         print(header)
         print("-" * len(header))
 
-        for i, li in enumerate(self.items, start=1):
+        for i, li in enumerate(self._items, start=1):
             sku_lines = textwrap.wrap(li.sku, width=w_sku) or [""]
             unit_s = fmt_money(li.unit_price)
             sub_s = fmt_money(li.subtotal_after_discount)
@@ -272,7 +282,7 @@ class Order:
                         str(li.optional_discount.rate) if li.optional_discount else None
                     ),
                 }
-                for li in self.items
+                for li in self._items
             ],
             "total_cost": str(self.total_cost.amount),
         }
@@ -295,6 +305,14 @@ def demo() -> None:
     )
     order.add_item(LineItem(sku="MUG", unit_price=Money(Decimal("7.25")), quantity=2))
     order.add_item(LineItem(sku="MUG", unit_price=Money(Decimal("7.25")), quantity=1))
+    order.add_item(
+        LineItem(
+            sku="COOKIE",
+            unit_price=Money(Decimal("3.00")),
+            quantity=3,
+            optional_discount=DiscountRate(Decimal("0.50")),
+        )
+    )
 
     print(user, "\n")
     print("Total Items: ", order.total_items)  # 4
