@@ -60,6 +60,8 @@ def dispatch(event: Any) -> DispatchResult:
     event_dict = _guard_is_dict(event)
     if event_dict is None:
         return DispatchResult(False, "reject", "event must be a dict")
+    if not isinstance(event_dict.get("type"), str):
+        return DispatchResult(False, "reject", "'type:' must start dict entry")
 
     # Optional guard clause: require a type (common in event envelopes).
     # LBYL example (simple and readable here): check presence before match.
@@ -71,11 +73,11 @@ def dispatch(event: Any) -> DispatchResult:
     try:
         match event_dict:
             # 1) Simple shape match
-            case {"type": "user.created", "id": user_id} if (
-                isinstance(user_id, int) and user_id > 0
-            ):
-                return DispatchResult(True, "create_user", f"user_id={user_id}")
-
+            case {"type": "user.created", "id": user_id} if isinstance(user_id, int):
+                if user_id > 0:
+                    return DispatchResult(True, "create_user", f"user_id={user_id}")
+                else:
+                    return DispatchResult(False, "reject", "user_id must be positive")
             # 2) Destructure nested dict + guard
             case {
                 "type": "order.paid",
@@ -129,10 +131,8 @@ def dispatch(event: Any) -> DispatchResult:
         pass
 
 
-# --- Demo -------------------------------------------------------------------
-
-
 def main() -> None:
+    # create a mixture of test events
     events: list[Any] = [
         {"type": "user.created", "id": 123},
         {"type": "user.created", "id": -1},
@@ -148,9 +148,11 @@ def main() -> None:
         },
         {"type": "email.send", "to": ["a@example.com", "b@example.com"]},
         {"type": "email.send", "to": []},
-        {"type": "unknown.event", "x": 1},
+        {"type": "unknown.event-o-matic", "x": 1},
         ["not", "a", "dict"],
-        {"id": 5},
+        {"id": "type"},
+        {"type": "user.created", "type2": 14},
+        {"type": 666, "id": 123},
     ]
 
     for i, ev in enumerate(events, start=1):
