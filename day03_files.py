@@ -15,8 +15,7 @@ from uuid import UUID, uuid4
 # Expose / accept data via interfaces (Sequence)
 # _orders should remain a list[Order]
 # The class itself should present as a Sequence[Order]
-# You do not want _orders: Sequence[Order] if you intend to mutate it.
-# Mapping - computes total by looking up unit prices from a mapping not LineItem’s $$
+# You do not want _orders: Sequence[Order] if you intend to mutate it, keep list
 
 # Containers & Interfaces (quick mental model)
 # list[T]             -> concrete, mutable storage
