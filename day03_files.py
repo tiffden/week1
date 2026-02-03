@@ -18,6 +18,31 @@ from uuid import UUID, uuid4
 # You do not want _orders: Sequence[Order] if you intend to mutate it.
 # Mapping - computes total by looking up unit prices from a mapping not LineItem’s $$
 
+# Containers & Interfaces (quick mental model)
+# list[T]             -> concrete, mutable storage
+# Sequence[T]         -> read-only ordered interface (len, getitem, iter, count, index)
+# MutableSequence[T]  -> Sequence + mutators (append, insert, del, etc.)
+# Mapping[K, V]       -> read-only dict-like; MutableMapping adds set/delete
+
+# Iterable vs Iterator
+# Iterable: has __iter__ and returns a new iterator each time (e.g., list)
+# Iterator: has __iter__ + __next__, single pass (consumed once)
+
+# Protocols
+# Protocol defines "shape" (duck typing) for static checkers.
+# Use when behavior matters more than inheritance.
+
+# Rule of thumb:
+# - Store data in concrete types (list, dict).
+# - Accept/return interface types (Sequence, Mapping, Iterable) for flexibility.
+
+# Why I did it this way:
+# I keep storage in concrete containers (list, dict) for simple, reliable mutation,
+# but I expose data via interfaces (Sequence, Mapping, Iterable) so callers get
+# flexible, read-only access. Using Protocols lets me define required behavior
+# without forcing inheritance. This keeps invariants inside the class, improves
+# testability, and makes the API harder to misuse.
+
 # ----- Value Objects (immutable) -----
 UserId = NewType("UserId", UUID)
 OrderId = NewType("OrderId", UUID)
@@ -88,7 +113,7 @@ class Priced(Protocol):
     unit_price: Money
 
 
-# FREE FUNCTION
+# FREE FUNCTION - sum_prices: trusts embedded prices
 def sum_prices(things: Sequence[Priced]) -> Money:
     if not things:
         return Money.zero()
@@ -100,7 +125,7 @@ def sum_prices(things: Sequence[Priced]) -> Money:
     return sum((t.unit_price for t in things), start=Money.zero(currency))
 
 
-# FREE FUNCTION
+# FREE FUNCTION - price_total_from_table: authoritative external pricing
 def price_total_from_table(
     items: Sequence[LineItem],
     prices: Mapping[str, Money],
@@ -164,6 +189,78 @@ class User:
             self.display_name = self.email.split("@", 1)[0]
 
 
+@dataclass(frozen=True, slots=True)
+class LineItem:
+    sku: str
+    unit_price: Money
+    quantity: int = 1
+    optional_discount: Percent | None = None
+
+    def __post_init__(self) -> None:
+        if not self.sku.strip():
+            raise ValueError("sku must be non-empty")
+        if self.quantity <= 0:
+            raise ValueError("quantity must be >= 1")
+
+    @property
+    def subtotal(self) -> Money:
+        return self.unit_price * self.quantity
+
+    @property
+    def subtotal_after_discount(self) -> Money:
+        if self.optional_discount is None:
+            return self.subtotal
+        return self.subtotal - self.optional_discount.of(self.subtotal)
+
+
+# MUTABLESEQUENCE - wrapper around list, place to add rules, validation, helpers
+@dataclass(slots=True)
+class LineItems(MutableSequence[LineItem]):
+    _items: list[LineItem] = field(default_factory=list)
+
+    def __init__(self, items: Iterator[LineItem] | None = None) -> None:
+        # Normalize to a real list
+        self._items = list(items) if items is not None else []
+
+    @overload
+    def __getitem__(self, index: int) -> LineItem: ...
+    @overload
+    def __getitem__(self, index: slice) -> LineItems: ...
+
+    def __getitem__(self, index: int | slice) -> LineItem | LineItems:
+        if isinstance(index, slice):
+            return LineItems(iter(self._items[index]))
+        return self._items[index]
+
+    @overload
+    def __setitem__(self, index: int, value: LineItem) -> None: ...
+    @overload
+    def __setitem__(self, index: slice, value: Iterator[LineItem]) -> None: ...
+
+    def __setitem__(
+        self, index: int | slice, value: LineItem | Iterator[LineItem]
+    ) -> None:
+        if isinstance(index, slice):
+            if isinstance(value, (str, bytes)) or not isinstance(value, Iterator):
+                raise TypeError("Expected an Iterator of LineItem for slice assignment")
+            self._items[index] = list(value)
+        else:
+            if not isinstance(value, LineItem):
+                raise TypeError("Expected a LineItem for single item assignment")
+            self._items[index] = value
+
+    def __delitem__(self, index: int | slice) -> None:
+        del self._items[index]
+
+    def insert(self, index: int, value: LineItem) -> None:
+        if not isinstance(value, LineItem):
+            raise TypeError("Expected a LineItem for insert()")
+        self._items.insert(index, value)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+
 @dataclass(slots=True)
 class Order:
     id: OrderId
@@ -172,7 +269,8 @@ class Order:
     # self._items is the private, mutable storage
     # items_view is the public, read-only interface
 
-    _items: list[LineItem] = field(default_factory=list)
+    # OLD: _items: list[LineItem] = field(default_factory=list)
+    _items: LineItems = field(default_factory=LineItems)
 
     order_status: str = "new"
 
@@ -302,100 +400,28 @@ class Order:
         print(f"Discount applied: {fmt_money(self.total_discount_applied)}")
         print("")
 
-
-# FREE METHOD
-def to_dict(self) -> OrderDict:
-    return {
-        "id": str(self.id),
-        "user": self.user.email,
-        "created_at": self.created_at.isoformat(),
-        "order_status": self.order_status,
-        "items": [
-            {
-                "sku": li.sku,
-                "unit_price": str(li.unit_price.amount),
-                "quantity": li.quantity,
-                "subtotal": str(li.subtotal.amount),
-                "discount_rate": (
-                    str(li.optional_discount.value) if li.optional_discount else None
-                ),
-            }
-            for li in self._items
-        ],
-        "total_cost": str(self.total_cost.amount),
-    }
-
-
-@dataclass(frozen=True, slots=True)
-class LineItem:
-    sku: str
-    unit_price: Money
-    quantity: int = 1
-    optional_discount: Percent | None = None
-
-    def __post_init__(self) -> None:
-        if not self.sku.strip():
-            raise ValueError("sku must be non-empty")
-        if self.quantity <= 0:
-            raise ValueError("quantity must be >= 1")
-
-    @property
-    def subtotal(self) -> Money:
-        return self.unit_price * self.quantity
-
-    @property
-    def subtotal_after_discount(self) -> Money:
-        if self.optional_discount is None:
-            return self.subtotal
-        return self.subtotal - self.optional_discount.of(self.subtotal)
-
-
-# MUTABLESEQUENCE
-@dataclass(slots=True)
-class LineItems(MutableSequence[LineItem]):
-    _items: list[LineItem] = field(default_factory=list)
-
-    def __init__(self, items: Iterator[LineItem] | None = None) -> None:
-        # Normalize to a real list
-        self._items = list(items) if items is not None else []
-
-    @overload
-    def __getitem__(self, index: int) -> LineItem: ...
-    @overload
-    def __getitem__(self, index: slice) -> LineItems: ...
-
-    def __getitem__(self, index: int | slice) -> LineItem | LineItems:
-        if isinstance(index, slice):
-            return LineItems(iter(self._items[index]))
-        return self._items[index]
-
-    @overload
-    def __setitem__(self, index: int, value: LineItem) -> None: ...
-    @overload
-    def __setitem__(self, index: slice, value: Iterator[LineItem]) -> None: ...
-
-    def __setitem__(
-        self, index: int | slice, value: LineItem | Iterator[LineItem]
-    ) -> None:
-        if isinstance(index, slice):
-            if isinstance(value, (str, bytes)) or not isinstance(value, Iterator):
-                raise TypeError("Expected an Iterator of LineItem for slice assignment")
-            self._items[index] = list(value)
-        else:
-            if not isinstance(value, LineItem):
-                raise TypeError("Expected a LineItem for single item assignment")
-            self._items[index] = value
-
-    def __delitem__(self, index: int | slice) -> None:
-        del self._items[index]
-
-    def insert(self, index: int, value: LineItem) -> None:
-        if not isinstance(value, LineItem):
-            raise TypeError("Expected a LineItem for insert()")
-        self._items.insert(index, value)
-
-    def __len__(self) -> int:
-        return len(self._items)
+    def to_dict(self) -> OrderDict:
+        return {
+            "id": str(self.id),
+            "user": self.user.email,
+            "created_at": self.created_at.isoformat(),
+            "order_status": self.order_status,
+            "items": [
+                {
+                    "sku": li.sku,
+                    "unit_price": str(li.unit_price.amount),
+                    "quantity": li.quantity,
+                    "subtotal": str(li.subtotal.amount),
+                    "discount_rate": (
+                        str(li.optional_discount.value)
+                        if li.optional_discount
+                        else None
+                    ),
+                }
+                for li in self._items
+            ],
+            "total_cost": str(self.total_cost.amount),
+        }
 
 
 # SEQUENCE
@@ -572,7 +598,7 @@ def demo() -> None:
     print(f"Total from price table for order1: {total}")
 
     for o in master_orders:
-        print("TypedDict:", to_dict(o))
+        print("TypedDict:", o.to_dict())
 
 
 if __name__ == "__main__":
