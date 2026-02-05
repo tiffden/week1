@@ -147,8 +147,19 @@ def iter_stdlib_module_names() -> list[str]:
 
 
 def find_symbol_matches(symbol: str, module_names: Iterable[str]) -> list[SymbolMatch]:
+    # Avoid modules with known import-time side effects.
+    skip_modules = {
+        "antigravity",  # opens a browser and prints text
+        "this",  # prints The Zen of Python
+        "turtle",  # may open a GUI window
+        "pydoc",  # may page output or open a browser
+        "webbrowser",  # may open a browser
+    }
     matches: list[SymbolMatch] = []
     for mod_name in module_names:
+        if mod_name in skip_modules:
+            continue
+
         try:
             mod = importlib.import_module(mod_name)
         except Exception:
