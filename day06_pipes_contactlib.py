@@ -3,11 +3,33 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import sys
 from collections.abc import Iterable
 from contextlib import ExitStack
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+
+# -------------------------
+# How this maps to the Day 6 targets
+# 	•	with open(...): used via Path.open() inside ExitStack (still a with pattern).
+# 	•	ExitStack: manages input & output file handles together;
+#           this gives no leaks even on exceptions.
+# 	•	Custom exceptions: PipelineError subclasses with clear intent.
+# 	•	Narrow exception handling:
+# 	•	parses integers with except ValueError
+# 	•	parses decimals with except (InvalidOperation, ValueError)
+# 	•	output writes with except OSError
+# 	•	raise ... from e: used in parsing and IO layers to preserve the causal chain.
+# 	•	logging vs print: logs start/end, parameters, failure; print is never used.
+# -------------------------
+
+# -------------------------
+# Globals & Constants
+# -------------------------
+
+logger_name = "day06.pipeline"
+log = logging.getLogger(logger_name)
 
 # -------------------------
 # Custom exceptions (meaningful + composable)
@@ -63,14 +85,53 @@ class Stats:
 # -------------------------
 
 
+# basicConfig
+# 1.	Creates a root logger handler
+# 2.	Attaches a StreamHandler
+# 3.	Sets that handler to write to sys.stderr (not stdout)
+# 4.    level can be one of: DEBUG INFO WARNING ERROR CRITICAL
+#
+# formating using % - This is Python logging’s format-string mini-language.
+# It predates f-strings and is specific to the logging module,
+# logging.Formatter parses it, it specifies what from the LogRecord to use
+# general form:  %(field_name)format_spec
+#   %(asctime)s
+#   •	Human-readable timestamp
+#   •	Default format: YYYY-MM-DD HH:MM:SS,mmm
+#   •	Derived from record.created
+#   %(name)s
+#   • Logger name - here it will be day06.pipeline
+#
+# Usage:
+#   log = logging.getLogger("day06.pipeline")
+#   log.warning("bad input: %r", value)
+#
+# Handler (where the log output goes, defaults to sys.stderr)
+#   handlers=[logging.StreamHandler(sys.stdout)] - mix it in with print()
+#   filename="log.txt" -- file in the runtime directory
 def configure_logging(level: int = logging.INFO) -> None:
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    root = logging.getLogger(logger_name)
+    root.setLevel(level)
 
+    if root.handlers:
+        return  # prevent duplicate handlers if called twice
 
-log = logging.getLogger("day06.pipeline")
+    log_path = Path("logs/day06_pipes.log")
+    log_path.parent.mkdir(exist_ok=True)
+
+    fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+    formatter = logging.Formatter(fmt)
+
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setLevel(level)
+    file_handler.setFormatter(formatter)
+
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setLevel(level)
+    console_handler.setFormatter(formatter)
+
+    root.addHandler(file_handler)
+    root.addHandler(console_handler)
 
 
 # -------------------------
@@ -140,7 +201,7 @@ def run_pipeline(input_csv: Path, out_clean_csv: Path, out_stats_json: Path) -> 
     if not input_csv.exists():
         raise InputNotFoundError(f"Input file not found: {input_csv}")
 
-    # Ensure output dirs exist (resource hygiene + ergonomics)
+    # Ensure output dirs exist
     out_clean_csv.parent.mkdir(parents=True, exist_ok=True)
     out_stats_json.parent.mkdir(parents=True, exist_ok=True)
 
@@ -199,7 +260,12 @@ def run_pipeline(input_csv: Path, out_clean_csv: Path, out_stats_json: Path) -> 
                 f"Failed to write stats JSON: {out_stats_json}"
             ) from e
 
-        log.info("Done. rows_out=%d total_qty=%d gross=%s", rows_out, total_qty, gross)
+        log.info(
+            "Processing Completed: rows_out=%d total_qty=%d gross=%s",
+            rows_out,
+            total_qty,
+            gross,
+        )
         return stats
 
     except OSError as e:
@@ -213,21 +279,47 @@ def run_pipeline(input_csv: Path, out_clean_csv: Path, out_stats_json: Path) -> 
 
 
 def main() -> None:
+    # Top-level imports run at import time VERSUS
+    # Code inside main() runs only when the program is executed as a script
+    # Everything CLI-ish belongs in main()
     import argparse
 
     configure_logging()
+    log.info("starting log")
+
+    # USAGE EXAMPLE FROM argparse.py
+    # parser = argparse.ArgumentParser(
+    #     description='sum the integers at the command line')
+    # parser.add_argument(
+    #     'integers', metavar='int', nargs='+', type=int,
+    #     help='an integer to be summed')
+    # parser.add_argument(
+    #     '--log', default=sys.stdout, type=argparse.FileType('w'),
+    #     help='the file where the sum should be written')
+    # args = parser.parse_args()
+    # args.log.write('%s' % sum(args.integers))
+    # args.log.close()
 
     p = argparse.ArgumentParser(description="Day 6 file-processing pipeline")
-    p.add_argument("input_csv", type=Path)
+
+    p.add_argument("input_csv", type=Path, nargs="?")  # optional
     p.add_argument("--out-clean", type=Path, default=Path("out/clean.csv"))
     p.add_argument("--out-stats", type=Path, default=Path("out/stats.json"))
     args = p.parse_args()
+
+    if args.input_csv is None:
+        user_input = input("Input CSV path: ").strip()
+        if not user_input:
+            print("Input CSV path is required.")
+            raise SystemExit(2)
+        args.input_csv = Path(user_input)
 
     try:
         run_pipeline(args.input_csv, args.out_clean, args.out_stats)
     except PipelineError as e:
         # log.exception prints stack trace; helpful during development.
         log.exception("Pipeline failed: %s", e)
+        print("Pipeline failed, see log.")
         raise SystemExit(2) from e
 
 

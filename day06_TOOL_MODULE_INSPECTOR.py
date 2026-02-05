@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -120,10 +121,79 @@ def print_report(r: ModuleReport) -> None:
     print(f"Location:        {r.location}")
     print(f"Readable source: {'yes' if r.readable_source else 'no'}")
     print(f"Loader:          {r.loader}")
-    print(f"Location:        {r.origin}")
+    print(f"Origin:          {r.origin}")
     print("\nAdvice:")
     print(r.advice)
     print()
+
+
+# -------------------------
+# Symbol lookup
+# -------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SymbolMatch:
+    symbol: str
+    found_in: str
+    origin_module: str | None
+    object_type: str
+    source: str | None
+
+
+def iter_stdlib_module_names() -> list[str]:
+    names = sorted(getattr(sys, "stdlib_module_names", set()))
+    return names
+
+
+def find_symbol_matches(symbol: str, module_names: Iterable[str]) -> list[SymbolMatch]:
+    matches: list[SymbolMatch] = []
+    for mod_name in module_names:
+        try:
+            mod = importlib.import_module(mod_name)
+        except Exception:
+            continue
+
+        if not hasattr(mod, symbol):
+            continue
+
+        obj = getattr(mod, symbol)
+        origin_module = getattr(obj, "__module__", None)
+        obj_type = type(obj).__name__
+        source = None
+        try:
+            source = inspect.getsourcefile(obj) or inspect.getfile(obj)
+        except Exception:
+            pass
+
+        matches.append(
+            SymbolMatch(
+                symbol=symbol,
+                found_in=mod.__name__,
+                origin_module=origin_module,
+                object_type=obj_type,
+                source=source,
+            )
+        )
+
+    return matches
+
+
+def print_symbol_matches(symbol: str, matches: list[SymbolMatch]) -> None:
+    print("\nSymbol lookup")
+    print("=" * 30)
+    print(f"Symbol: {symbol}")
+    if not matches:
+        print("No matches found in the standard library.")
+        print("Tip: the symbol may live in a third-party package.")
+        return
+
+    for m in matches:
+        print("-" * 30)
+        print(f"Found in:     {m.found_in}")
+        print(f"Origin:       {m.origin_module}")
+        print(f"Object type:  {m.object_type}")
+        print(f"Source:       {m.source}")
 
 
 # -------------------------
@@ -133,20 +203,40 @@ def print_report(r: ModuleReport) -> None:
 
 def main() -> None:
     try:
-        name = input("Module name to inspect (e.g. math, pathlib): ").strip()
-        if not name:
-            raise ValueError("No module name provided")
+        choice = input("Look up a module or a symbol? (m/s): ").strip().lower()
+        if not choice:
+            raise ValueError("No choice provided")
 
-        mod = importlib.import_module(name)
+        if choice in {"m", "module"}:
+            name = input("Module name to inspect (e.g. math, pathlib): ").strip()
+            if not name:
+                raise ValueError("No module name provided")
 
-        # Extra signal: can inspect.getsource succeed?
-        try:
-            inspect.getsource(mod)
-        except (OSError, TypeError):
-            pass  # expected for non-Python modules
+            mod = importlib.import_module(name)
 
-        report = classify_module(mod)
-        print_report(report)
+            # Extra signal: can inspect.getsource succeed?
+            try:
+                inspect.getsource(mod)
+            except (OSError, TypeError):
+                pass  # expected for non-Python modules
+
+            report = classify_module(mod)
+            print_report(report)
+
+        elif choice in {"s", "symbol"}:
+            symbol = input("Symbol to locate in the stdlib (e.g. ExitStack): ").strip()
+            if not symbol:
+                raise ValueError("No symbol provided")
+
+            stdlib_names = iter_stdlib_module_names()
+            if not stdlib_names:
+                print("Stdlib module names are unavailable on this Python build.")
+            else:
+                matches = find_symbol_matches(symbol, stdlib_names)
+                print_symbol_matches(symbol, matches)
+
+        else:
+            raise ValueError("Choice must be 'm' or 's'")
 
     except ModuleNotFoundError as e:
         print(f"ERROR: Module not found: {e.name}", file=sys.stderr)
