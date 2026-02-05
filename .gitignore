@@ -5,4 +5,7 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .pytest_cache/
+logs/
+out/
+temp_notepad.py
 EOF
